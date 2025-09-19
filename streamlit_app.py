@@ -2,6 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.express as px
+import numpy as np
 import sys  # for console debug printing
 
 st.title("Stock Price Dashboard")
@@ -20,21 +21,17 @@ else:
         st.write(f"## {ticker} Stock Prices")
         data = data.reset_index()
 
-        # Check for MultiIndex columns and flatten them
+        # Flatten MultiIndex columns if any
         if isinstance(data.columns, pd.MultiIndex):
-            print("Data has MultiIndex columns:", data.columns, file=sys.stderr)
             data.columns = [' '.join(map(str, col)).strip() for col in data.columns.values]
-            print("Flattened columns:", list(data.columns), file=sys.stderr)
 
-        # Print debug info to console only, NOT in Streamlit UI
+        # Just to confirm columns
         print("Columns in DataFrame:", list(data.columns), file=sys.stderr)
-        print("DataFrame dtypes:\n", data.dtypes, file=sys.stderr)
 
         st.write("### Data Table")
         st.dataframe(data)
 
         numeric_cols = data.select_dtypes(include=['number']).columns.tolist()
-        print("Numeric columns detected:", numeric_cols, file=sys.stderr)
 
         if len(numeric_cols) == 0:
             st.warning("No numeric columns available to plot.")
@@ -42,35 +39,59 @@ else:
             selected_col = st.selectbox(
                 "Select numeric column to plot",
                 options=numeric_cols,
-                index=numeric_cols.index('Close RELIANCE.BO') if 'Close RELIANCE.BO' in numeric_cols else 0
+                index=numeric_cols.index('Close') if 'Close' in numeric_cols else 0
             )
 
-            print("Selected column:", selected_col, file=sys.stderr)
+            # Prepare historical data
+            data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
+            plot_data = data.dropna(subset=['Date', selected_col]).copy()
 
-            if isinstance(selected_col, (list, tuple)):
-                selected_col = selected_col[0]
+            # === PREDICTION PART ===
+            # For demo purposes: generate a simple mock prediction for next 30 days
+            last_date = plot_data['Date'].max()
+            future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=30, freq='B')  # business days
 
-            if 'Date' not in data.columns:
-                st.warning("Date column missing, cannot generate chart.")
-            elif selected_col not in data.columns:
-                st.error(f"Selected column '{selected_col}' not found in data columns.")
-            else:
-                data['Date'] = pd.to_datetime(data['Date'], errors='coerce')
-                plot_data = data.dropna(subset=['Date', selected_col])
+            # Simple model: last known value + random walk
+            last_value = plot_data[selected_col].iloc[-1]
+            np.random.seed(42)
+            random_walk = np.random.normal(loc=0, scale=1, size=len(future_dates)).cumsum()
+            predicted_values = last_value + random_walk
 
-                print(f"Rows after dropping NaNs: {len(plot_data)}", file=sys.stderr)
+            pred_df = pd.DataFrame({
+                'Date': future_dates,
+                f'{selected_col}_predicted': predicted_values
+            })
 
-                if plot_data.empty:
-                    st.warning("No valid data available for plotting after cleaning.")
-                else:
-                    fig = px.line(
-                        plot_data,
-                        x='Date',
-                        y=selected_col,
-                        title=f"{selected_col} Price over Time for {ticker}"
-                    )
-                    fig.update_layout(xaxis_title='Date', yaxis_title=selected_col)
-                    st.plotly_chart(fig, use_container_width=True)
+            # Combine historical and prediction data for plotting
+            combined_df = pd.merge(plot_data[['Date', selected_col]], pred_df, on='Date', how='outer')
+
+            # Plot both actual and predicted data
+            import plotly.graph_objects as go
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=plot_data['Date'],
+                y=plot_data[selected_col],
+                mode='lines+markers',
+                name='Actual'
+            ))
+
+            fig.add_trace(go.Scatter(
+                x=pred_df['Date'],
+                y=pred_df[f'{selected_col}_predicted'],
+                mode='lines+markers',
+                name='Predicted',
+                line=dict(dash='dash')
+            ))
+
+            fig.update_layout(
+                title=f"{selected_col} Price over Time for {ticker} (Actual vs Predicted)",
+                xaxis_title='Date',
+                yaxis_title=selected_col,
+                legend=dict(x=0, y=1)
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
 
     else:
         st.warning("No data found for the selected ticker and date range.")
